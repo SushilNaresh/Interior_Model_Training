@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BIM AI Pipeline & ML Trainer Dashboard</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container wide-layout">
+        <header>
+            <div>
+                <h1 style="margin:0; font-size: 24px;">OonexBIM Control Panel</h1>
+                <p style="margin:5px 0 0 0; color: var(--text-muted); font-size: 14px;">Unified Floor Plan Labeler & Automated ML Trainer Framework</p>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
+                <nav class="main-nav">
+                    <button class="btn" id="nav-dashboard">Dashboard</button>
+                    <button class="btn" id="nav-train">Train</button>
+                    <button class="btn" id="nav-correct">Correct</button>
+                    <button class="btn" id="nav-test">Test</button>
+                    <button class="btn" id="nav-ifc">IFC Props</button>
+                    <button class="btn" id="nav-analyse">OCR</button>
+                    <button class="btn" id="nav-convert">Convert</button>
+                    <button class="btn" id="nav-models">Models</button>
+                </nav>
+                <div id="system-status" class="status-badge">Engine Status: Ready</div>
+            </div>
+        </header>
+
+        <div id="panel-dashboard">
+        <div class="grid">
+            <div class="controls-col">
+                <div class="card">
+                    <h2>1. Dataset Upload Store</h2>
+                    <div class="form-group">
+                        <label>Select Floor Plan Blueprints (JPG, PNG)</label>
+                        <input type="file" id="file-uploader" multiple accept="image/*">
+                    </div>
+                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                        <button class="btn" onclick="uploadFiles()">Upload Assets</button>
+                        <button class="btn" id="gdrive-download-btn" onclick="downloadGDrive()">Download GDrive Dataset</button>
+                    </div>
+                    
+                    <h3 style="font-size:14px; margin-top:20px; color:var(--text-muted);">Available Floor Plans (Select to Run)</h3>
+                    <ul id="raw-file-list" class="file-list"></ul>
+                </div>
+
+                <div class="card">
+                    <h2>2. Core Pipeline Operations</h2>
+                    <div class="form-group">
+                        <label>Processing Engine Context Strategy</label>
+                        <select id="metadata-choice">
+                            <option value="local">Local Heuristics + OCR (no API key)</option>
+                            <option value="gemini">Google Gemini Vision API (Generates IFC + Auto-Trains)</option>
+                        </select>
+                    </div>
+                    <button class="btn btn-success" style="width:100%;" onclick="runAutoLabel()">Execute Auto-Label & IFC Compile</button>
+                </div>
+
+                <div class="card">
+                    <h2>Live System Stream Console</h2>
+                    <div id="log-terminal" class="log-terminal">System initialized. Awaiting pipeline triggers...</div>
+                </div>
+            </div>
+
+            <div class="preview-col">
+                <div class="card" style="height: calc(100% - 40px);">
+                    <h2>Active Spatial Mapping Segmentation Output</h2>
+                    <div class="image-preview-area">
+                        <div id="preview-placeholder" style="color: var(--text-muted);">No layout processed yet this session</div>
+                        <img id="marked-image-view" style="display:none;" src="" alt="Segment Overlay Preview">
+                    </div>
+                </div>
+            </div>
+        </div>
+        </div>
+    </div>
+
+    <script>
+        // Global loader control
+        (function(){
+            const loader = document.createElement('div');
+            loader.id = 'global-loader';
+            loader.style = `position:fixed;left:0;top:0;right:0;bottom:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);z-index:9999;`;
+            loader.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:18px;border-radius:8px;background:rgba(10,10,12,0.95);color:#fff;">
+                <div class="spinner" style="width:48px;height:48px;border-radius:50%;border:5px solid rgba(255,255,255,0.12);border-top-color:#38bdf8;animation:spin 1s linear infinite"></div>
+                <div id="global-loader-msg" style="font-size:14px;color:#cbd5e1;">Processing…</div>
+            </div>`;
+            document.body.appendChild(loader);
+            const style = document.createElement('style');
+            style.innerHTML = `@keyframes spin{from{transform:rotate(0);}to{transform:rotate(360deg);}}`;
+            document.head.appendChild(style);
+            window.showLoader = function(msg){ document.getElementById('global-loader-msg').innerText = msg || 'Processing…'; loader.style.display = 'flex'; };
+            window.hideLoader = function(){ loader.style.display = 'none'; };
+        })();
+
+        // Connect live server log engine metrics stream 
+        const eventSource = new EventSource('/api/stream');
+        eventSource.onerror = function(e){
+            console.error('EventSource error', e);
+            const t = document.getElementById('log-terminal');
+            if (t) { t.innerText += '\n[UI] EventSource connection error — check server or network.'; t.scrollTop = t.scrollHeight; }
+        };
+        eventSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            if (data.log) {
+                const terminal = document.getElementById('log-terminal');
+                terminal.innerText += '\n' + data.log;
+                terminal.scrollTop = terminal.scrollHeight;
+            }
+            if (data.progress && data.progress.status) {
+                document.getElementById('system-status').innerText = 'Engine Status: ' + data.progress.status;
+            }
+        };
+
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                
+                const listContainer = document.getElementById('raw-file-list');
+                listContainer.innerHTML = '';
+                
+                if (data.raw_images && data.raw_images.length > 0) {
+                    data.raw_images.forEach(imgName => {
+                        const li = document.createElement('li');
+                        li.style.display = "flex";
+                        li.style.alignItems = "center";
+                        li.style.justifyContent = "space-between";
+                        
+                        li.innerHTML = `
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <input type="checkbox" class="plan-selector" value="${imgName}" style="width: auto; margin: 0;">
+                                <span>${imgName}</span>
+                            </div>
+                            <span style="color:var(--accent-primary); cursor:pointer; font-weight: 500;" onclick="selectImage('${imgName}')">View</span>
+                        `;
+                        listContainer.appendChild(li);
+                    });
+                } else {
+                    listContainer.innerHTML = '<li style="color:var(--text-muted);">No blueprints found. Upload images above.</li>';
+                }
+                // keep correct panel selector in sync if present
+                try { if (window.refreshCorrectImages) window.refreshCorrectImages(); } catch(e){}
+                try { if (window.refreshTrainLists) window.refreshTrainLists(); } catch(e){}
+                try { if (window.refreshTestLists) window.refreshTestLists(); } catch(e){}
+                try { if (window.refreshModelsList) window.refreshModelsList(); } catch(e){}
+            } catch (err) {
+                console.error("Status check failing", err);
+            }
+        }
+
+        async function uploadFiles() {
+            const fileInput = document.getElementById('file-uploader');
+            if (fileInput.files.length === 0) return alert('Please select files first!');
+
+            const formData = new FormData();
+            for (let i = 0; i < fileInput.files.length; i++) {
+                formData.append('files', fileInput.files[i]);
+            }
+
+            document.getElementById('log-terminal').innerText += '\n[UI] Uploading blueprint files...';
+            try {
+                window.showLoader('Uploading files to server...');
+                const res = await fetch('/api/upload', { method: 'POST', body: formData });
+                if (res.ok) {
+                    alert('Files uploaded successfully to server dataset store.');
+                    updateStatus();
+                } else {
+                    document.getElementById('log-terminal').innerText += '\n[UI] Upload failed: ' + res.statusText;
+                }
+            } catch(e){ document.getElementById('log-terminal').innerText += '\n[UI] Upload error: '+e; }
+            finally { window.hideLoader(); }
+        }
+
+        async function runAutoLabel() {
+            console.log('[UI] runAutoLabel() called');
+            const choice = document.getElementById('metadata-choice').value;
+            
+            // Collect selected checkboxes exclusively
+            const checkboxes = document.querySelectorAll('.plan-selector:checked');
+            const selectedFiles = Array.from(checkboxes).map(cb => cb.value);
+            
+            if (selectedFiles.length === 0) {
+                document.getElementById('log-terminal').innerText += '\n[UI] ⚠️ No files selected. Running for ALL available plans...';
+            } else {
+                document.getElementById('log-terminal').innerText += `\n[UI] Triggered selective processing queue for: [${selectedFiles.join(', ')}]`;
+            }
+            
+            try {
+                const loaderMsg = choice === 'gemini' ? 'Requesting Auto-Label from Gemini…' : 'Running local auto-label…';
+                window.showLoader(loaderMsg);
+                const res = await fetch('/api/autolabel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ metadata_choice: choice, files: selectedFiles })
+                });
+                try {
+                    const j = await res.json();
+                    if (j.logs && Array.isArray(j.logs)) {
+                        j.logs.forEach(l => { document.getElementById('log-terminal').innerText += '\n' + l; });
+                    }
+                    document.getElementById('log-terminal').innerText += '\n[UI] Autolabel response: ' + JSON.stringify(j);
+                } catch(e) { document.getElementById('log-terminal').innerText += '\n[UI] Autolabel response: (no JSON)'; }
+                if (res.ok) setTimeout(checkOutputView, 3000);
+            } catch(e) {
+                document.getElementById('log-terminal').innerText += '\n[UI] Autolabel error: '+e;
+            } finally { window.hideLoader(); }
+        }
+
+        async function checkOutputView() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                if (data.labelled_images && data.labelled_images.length > 0) {
+                    selectImage(data.labelled_images[0]);
+                } else {
+                    setTimeout(checkOutputView, 3000);
+                }
+            } catch(e){}
+        }
+
+        async function selectImage(imgName) {
+            document.getElementById('log-terminal').innerText += `\n[UI] Fetching canvas context background for: ${imgName}`;
+            const res = await fetch(`/api/image/${encodeURIComponent(imgName)}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.marked_b64) {
+                    document.getElementById('preview-placeholder').style.display = 'none';
+                    const img = document.getElementById('marked-image-view');
+                    img.src = 'data:image/jpeg;base64,' + data.marked_b64;
+                    img.style.display = 'block';
+                }
+            }
+        }
+
+        async function downloadGDrive() {
+            document.getElementById('log-terminal').innerText += '\n[UI] Starting Google Drive download…';
+            try {
+                window.showLoader('Downloading dataset from Google Drive…');
+                const res = await fetch('/api/download', { method: 'POST' });
+                const j = await res.json();
+                document.getElementById('log-terminal').innerText += `\n[UI] Download queued: ${JSON.stringify(j)}`;
+                setTimeout(updateStatus, 5000);
+            } catch (e) {
+                document.getElementById('log-terminal').innerText += `\n[UI] Download error: ${e}`;
+            } finally {
+                window.hideLoader();
+            }
+        }
+
+        window.onload = updateStatus;
+
+        // Diagnostic: ensure page served over HTTP (not file://). If not, advise user to open via http://localhost:8000/
+        if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') {
+            const t = document.getElementById('log-terminal');
+            if (t) t.innerText += '\n[UI] WARNING: Page loaded with protocol ' + window.location.protocol + '. Open the dashboard via http://localhost:8000/ to enable API calls and loader.';
+        }
+    </script>
+    <script type="module">
+        import { initTrain } from '/static/js/train.js';
+        import { initCorrect } from '/static/js/correct.js';
+        import { initTest } from '/static/js/test.js';
+        import { initModels } from '/static/js/models.js';
+        import { initIfc } from '/static/js/ifc.js';
+        import { initAnalyse } from '/static/js/analyse.js';
+        import { initConvert } from '/static/js/convert.js';
+
+        const ALL_PANELS = ['dashboard','train','correct','test','ifc','analyse','convert','models'];
+
+        function showPanel(name) {
+            ALL_PANELS.forEach(p => {
+                const el = document.getElementById('panel-' + p);
+                if (!el) return;
+                el.style.display = (p === name) ? 'block' : 'none';
+            });
+        }
+
+        const navMap = {
+            'nav-dashboard': 'dashboard', 'nav-train': 'train', 'nav-correct': 'correct',
+            'nav-test': 'test', 'nav-ifc': 'ifc', 'nav-analyse': 'analyse',
+            'nav-convert': 'convert', 'nav-models': 'models'
+        };
+        const navButtons = Object.keys(navMap).map(id => document.getElementById(id)).filter(Boolean);
+        function setActive(id) {
+            navButtons.forEach(b => { if (b.id === id) b.style.opacity = 1; else b.style.opacity = 0.65; });
+        }
+        Object.entries(navMap).forEach(([navId, panel]) => {
+            document.getElementById(navId)?.addEventListener('click', () => {
+                showPanel(panel);
+                setActive(navId);
+                if (panel === 'train' && window.refreshTrainLists) window.refreshTrainLists();
+                if (panel === 'correct' && window.refreshCorrectImages) window.refreshCorrectImages();
+                const t = document.getElementById('log-terminal');
+                if (t) { t.innerText += `\n[UI] Nav: ${panel}`; t.scrollTop = t.scrollHeight; }
+            });
+        });
+
+        const container = document.querySelector('.container');
+        if (container) {
+            container.insertAdjacentHTML('beforeend', `
+            <div id="panel-train" class="card panel-page panel-page-full" style="display:none">
+                <div class="train-layout">
+                    <div class="train-controls card">
+                        <button class="btn-primary" id="btnDownload">⬇ Download GDrive</button>
+                        <button class="btn-secondary" id="btnUpload">📁 Upload Images</button>
+                        <input type="file" id="trainFileInput" multiple accept="image/*,.svg" style="display:none">
+                        <div class="sep"></div>
+                        <button class="btn-primary" id="btnAutoLabel">🏷 Auto-Label All</button>
+                        <div class="sep"></div>
+                        <div class="param-group"><label for="train-epochs">Epochs</label><input type="number" id="train-epochs" value="50" min="1" max="500"></div>
+                        <div class="param-group"><label for="train-batch">Batch</label><input type="number" id="train-batch" value="4" min="1" max="64"></div>
+                        <div class="param-group"><label for="train-imgsz">ImgSz</label><input type="number" id="train-imgsz" value="640" min="320" max="1280" step="32"></div>
+                        <button class="btn btn-success" id="btnTrain">▶ Train Model</button>
+                    </div>
+                    <div class="card image-viewer">
+                        <div class="viewer-header" style="flex-direction:column;gap:6px;margin-bottom:8px">
+                            <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">
+                                <button class="view-mode-btn active" id="vmRaw">📁 Raw Images</button>
+                                <button class="view-mode-btn" id="vmLabelled">🏷 Labelled</button>
+                                <span id="imgCounter" style="font-size:12px;color:var(--muted);margin-left:4px">0 / 0</span>
+                                <div style="flex:1"></div>
+                                <span id="selectionBar" style="display:none;align-items:center;gap:4px">
+                                    <span id="selCount" style="font-size:12px;color:var(--accent);font-weight:600"></span>
+                                    <button class="btn-secondary" style="font-size:11px;padding:3px 8px" id="btnSelectAllRaw">Select All</button>
+                                    <button class="btn-secondary" style="font-size:11px;padding:3px 8px" id="btnDeselectAllRaw">Deselect</button>
+                                    <button class="btn btn-success" style="font-size:11px;padding:3px 10px" id="btnTrainSelected" disabled>▶ Train Selected</button>
+                                </span>
+                                <button class="btn-secondary" id="btnPrevImage">◀</button>
+                                <button class="btn-secondary" id="btnNextImage">▶</button>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:6px">
+                                <div id="folderPathBar" style="font-size:11px;color:var(--muted);background:#020617;border-radius:4px;padding:3px 8px;font-family:monospace;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Loading...</div>
+                                <button class="btn-secondary" style="font-size:11px;padding:2px 8px" id="btnTrainAddImages">+ Add</button>
+                            </div>
+                        </div>
+                        <div id="thumbStrip"></div>
+                        <div class="viewer-body">
+                            <div class="pz-wrap" id="trainViewer">
+                                <div class="pz-inner" id="trainViewerInner"><div class="placeholder-text" style="padding:40px">Select raw or labelled images</div></div>
+                                <div class="pz-toolbar">
+                                    <button type="button" id="btnTrainPzIn">+</button>
+                                    <button type="button" id="btnTrainPzOut">−</button>
+                                    <button type="button" id="btnTrainPzFit">⊡</button>
+                                    <button type="button" id="btnTrainPzReset">↺</button>
+                                </div>
+                                <div class="pz-zoom-label" id="trainViewerZoom">100%</div>
+                            </div>
+                        </div>
+                        <div id="imgStats" style="margin-top:6px;font-size:12px;color:var(--muted)"></div>
+                    </div>
+                    <div class="card log-panel">
+                        <div class="card-title">Training Log</div>
+                        <div class="progress-bar" style="margin-bottom:8px"><div class="fill" id="train-progress-fill" style="width:0%"></div></div>
+                        <div class="log-output" id="train-log-output"></div>
+                        <div class="metrics-grid" id="train-metrics-grid"></div>
+                        <div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px">
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                                <span style="font-size:12px;font-weight:600;color:var(--muted)">MODEL VERSIONS</span>
+                                <button class="btn-secondary" style="font-size:11px;padding:2px 8px" id="btnRefreshModels">↻</button>
+                            </div>
+                            <div id="modelVersionList" style="max-height:160px;overflow-y:auto;font-size:11px"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="panel-correct" class="card panel-page panel-page-full" style="display:none">
+                <div class="correct-layout">
+                    <div class="card correct-col">
+                        <div class="toolbar-row" style="border-bottom:1px solid rgba(255,255,255,0.06);padding-bottom:8px">
+                            <select id="correct-select" class="flex-grow"><option value="">— Select image —</option></select>
+                            <button class="btn-secondary" id="correct-refresh">↻</button>
+                            <button class="btn btn-success" id="correct-save-btn">💾 Save</button>
+                            <button class="btn-danger" id="correct-revert-btn">↩ Revert</button>
+                            <button class="btn-primary" id="correct-update-model">🔄 Update Model</button>
+                            <span id="ocrCorrectionBadge" style="display:none;background:#4ade80;color:#000;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px">OCR Corrected</span>
+                        </div>
+                        <div class="toolbar-row">
+                            <button class="view-mode-btn active" id="cvMarked">🏷 Labelled</button>
+                            <button class="view-mode-btn" id="cvPre">🔍 Pre-OCR</button>
+                            <button class="view-mode-btn" id="cvPost">✅ Post-OCR</button>
+                            <div style="flex:1"></div>
+                            <button class="btn-secondary" id="correctPzIn">+</button>
+                            <button class="btn-secondary" id="correctPzOut">−</button>
+                            <button class="btn-secondary" id="correctPzFit">⊡</button>
+                            <button class="btn-secondary" id="correctPzReset">↺</button>
+                            <span id="correctViewerZoom" style="font-size:11px;color:var(--muted);min-width:36px">100%</span>
+                        </div>
+                        <div id="drawToolbar" class="toolbar-row" style="background:rgba(255,255,255,0.03);border-radius:8px;padding:6px 8px">
+                            <span style="font-size:12px;font-weight:600;color:var(--muted)">✏️ Draw:</span>
+                            <button class="view-mode-btn" id="btnDrawMode">🖊 Draw Region</button>
+                            <select id="draw-class" style="font-size:12px;min-width:180px"></select>
+                            <span id="drawStatus" style="font-size:11px;color:var(--muted)">Select class and click Draw Region</span>
+                            <button class="btn-danger small" id="btnCancelDraw" style="display:none">✕ Cancel</button>
+                        </div>
+                        <div id="ocrSummaryBar" style="display:none;font-size:11px;color:var(--muted);background:#020617;border-radius:4px;padding:4px 8px;font-family:monospace;margin-bottom:6px"></div>
+                        <div style="flex:1;min-height:360px;position:relative">
+                            <div class="pz-wrap" id="correctViewer">
+                                <div class="pz-inner" id="correctViewerInner"><div class="placeholder-text" style="padding:40px">Select a labelled image</div></div>
+                                <canvas id="correctDrawCanvas"></canvas>
+                                <div id="editOverlay"><canvas id="editBboxCanvas"></canvas><div id="editHandles"></div></div>
+                            </div>
+                        </div>
+                        <div id="correctStatusBar" style="font-size:11px;color:var(--muted);padding-top:4px"></div>
+                    </div>
+                    <div class="card correct-col">
+                        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+                            <span style="font-size:13px;font-weight:600;color:var(--muted)">LABELS</span>
+                            <span id="correctSummary" style="font-size:12px;color:var(--muted)"></span>
+                            <div style="flex:1"></div>
+                            <select id="filterClass" style="font-size:11px;padding:2px 6px"><option value="">All classes</option></select>
+                        </div>
+                        <div class="toolbar-row" style="border-bottom:1px solid rgba(255,255,255,0.06);padding-bottom:8px">
+                            <button class="btn small" id="label-select-all">Select All</button>
+                            <button class="btn small" id="label-deselect">Deselect</button>
+                            <button class="btn small" id="label-remove-selected">Remove</button>
+                            <select id="bulkRelabelClass" style="font-size:11px"><option value="">Relabel to...</option></select>
+                            <button class="btn small" id="btnBulkRelabel">↩ Apply</button>
+                        </div>
+                        <div id="label-list" class="label-list" style="flex:1;overflow-y:auto">No labels loaded</div>
+                    </div>
+                    <div id="ifcPropsPanel" class="card ifc-inline-panel">
+                        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+                            <span style="font-size:11px;font-weight:600;color:var(--muted);flex:1">IFC PROPERTIES</span>
+                            <span id="ifcClassName" style="font-size:11px;color:var(--accent);font-weight:600"></span>
+                            <button class="btn-secondary small" id="ifcCloseBtn">✕</button>
+                        </div>
+                        <div id="ifcPanelContent" style="flex:1;overflow-y:auto;font-size:12px"></div>
+                        <div style="display:flex;gap:6px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06)">
+                            <button class="btn btn-success" style="flex:1;font-size:11px" id="ifcSaveBtn">Save Props</button>
+                            <button class="btn-secondary" style="font-size:11px" id="ifcExportBtn">Export</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="panel-test" class="card panel-page" style="display:none">
+                <h2>Test Model</h2>
+                <div class="panel-grid-2">
+                    <div>
+                        <div class="form-group"><label>Select Image</label><select id="test-image-select"></select></div>
+                        <div class="form-group"><label>Select Model</label><select id="test-model-select"></select></div>
+                        <div class="form-group"><label>Confidence Threshold</label><input id="test-conf" type="number" step="0.05" min="0.01" max="1" value="0.1"></div>
+                        <div class="form-group"><label>Image Size (imgsz)</label><input id="test-imgsz" type="number" value="640"></div>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-success" id="test-run-btn">Run Test</button>
+                            <button class="btn" id="test-refresh-btn">Refresh</button>
+                        </div>
+                    </div>
+                    <div class="preview-box" id="test-preview-box">
+                        <p class="placeholder-text">Detection result appears on Dashboard preview when run</p>
+                    </div>
+                </div>
+            </div>
+
+            <div id="panel-ifc" class="card panel-page" style="display:none">
+                <h2>IFC Property Editor</h2>
+                <div class="toolbar-row">
+                    <select id="ifc-image-select" class="flex-grow"><option value="">— select image —</option></select>
+                    <select id="ifc-element-select"><option value="">— labelled element —</option></select>
+                    <button class="btn" id="ifc-refresh-btn">Refresh</button>
+                </div>
+                <div class="panel-grid-2">
+                    <div>
+                        <div class="form-group"><label>Class</label><select id="ifc-class-select"></select></div>
+                        <div class="form-group"><label>Element Index</label><input id="ifc-idx-input" type="number" value="1" min="1"></div>
+                        <div class="form-group"><label>Subtype</label><select id="ifc-subtype-select"><option value="">— none —</option></select></div>
+                        <div class="form-group"><label>Material</label><select id="ifc-material-select"></select></div>
+                        <div id="ifc-pset-form" class="ifc-form-scroll"></div>
+                        <div style="display:flex; gap:8px; margin-top:10px;">
+                            <button class="btn btn-success" id="ifc-save-btn">Save Properties</button>
+                            <button class="btn" id="ifc-export-btn">Export JSON</button>
+                        </div>
+                    </div>
+                    <div class="card side-panel">
+                        <h3>Saved Elements</h3>
+                        <div id="ifc-saved-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="panel-analyse" class="card panel-page" style="display:none">
+                <h2>OCR / Room Text Mapping</h2>
+                <div class="panel-grid-2">
+                    <div>
+                        <div class="form-group"><label>Select Image</label><select id="analyse-image-select"></select></div>
+                        <div class="form-group"><label>Or Upload</label><input id="analyse-file" type="file" accept="image/*"></div>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-success" id="analyse-run-btn">Run Analyse</button>
+                            <button class="btn" id="analyse-refresh-btn">Refresh</button>
+                        </div>
+                        <div class="form-group" style="margin-top:16px"><label>Summary</label><pre id="analyse-summary" class="code-block">—</pre></div>
+                        <div class="form-group"><label>Mappings</label><ul id="analyse-mappings" class="mapping-list"></ul></div>
+                    </div>
+                    <div class="preview-box">
+                        <div id="analyse-placeholder" class="placeholder-text">OCR overlay preview</div>
+                        <img id="analyse-overlay" style="display:none; max-width:100%; border-radius:6px;" alt="OCR overlay" />
+                    </div>
+                </div>
+            </div>
+
+            <div id="panel-convert" class="card panel-page" style="display:none">
+                <h2>Convert &amp; Evaluate</h2>
+                <div class="panel-grid-2">
+                    <div>
+                        <div class="form-group"><label>Select Image</label><select id="convert-image-select"></select></div>
+                        <div class="form-group"><label>Or Upload</label><input id="convert-file" type="file" accept="image/*"></div>
+                        <div class="form-group"><label>Processing Engine</label>
+                            <select id="convert-metadata-choice">
+                                <option value="gemini">Gemini (IFC + labels)</option>
+                                <option value="local">Local only (skip Gemini)</option>
+                            </select>
+                        </div>
+                        <div class="form-group"><label>Evaluate Weights Before</label><select id="convert-weights-before"></select></div>
+                        <div class="form-group"><label>Evaluate Weights After</label><select id="convert-weights-after"></select></div>
+                        <div style="display:flex; gap:8px;">
+                            <button class="btn btn-success" id="convert-run-btn">Run Convert</button>
+                            <button class="btn" id="convert-refresh-btn">Refresh</button>
+                        </div>
+                    </div>
+                    <div class="form-group"><label>Result</label><pre id="convert-result" class="code-block">—</pre></div>
+                </div>
+            </div>
+
+            <div id="panel-models" class="card panel-page" style="display:none">
+                <h2>Model Management</h2>
+                <div class="panel-grid-2">
+                    <div>
+                        <h3>Active &amp; Saved Models</h3>
+                        <button class="btn" id="models-refresh-btn" style="margin-bottom:10px">Refresh List</button>
+                        <div id="models-list" class="models-list"></div>
+                    </div>
+                    <div>
+                        <h3>Merge Models</h3>
+                        <div class="form-group"><label>Model A</label><select id="merge-model-a"></select></div>
+                        <div class="form-group"><label>Model B</label><select id="merge-model-b"></select></div>
+                        <div class="form-group"><label>Alpha (weight for A, 0–1)</label><input id="merge-alpha" type="number" step="0.1" min="0" max="1" value="0.5"></div>
+                        <div class="form-group"><label>Output Name</label><input id="merge-name" type="text" value="merged"></div>
+                        <button class="btn btn-success" id="merge-run-btn">Merge Models</button>
+                    </div>
+                </div>
+            </div>
+            `);
+        }
+
+        initTrain(); initCorrect(); initTest(); initModels(); initIfc(); initAnalyse(); initConvert();
+        showPanel('dashboard');
+        setActive('nav-dashboard');
+    </script>
+
+    <div id="updateModelPanel" class="modal-overlay">
+        <div class="modal-box" onclick="event.stopPropagation()">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <h3 style="margin:0;font-size:16px">🔄 Update Model from Corrections</h3>
+                <button class="btn-secondary" id="updateModelClose">✕</button>
+            </div>
+            <div id="updateModelInfo" style="background:#020617;border-radius:8px;padding:8px 12px;margin-bottom:14px;font-size:12px;color:var(--muted)">Loading...</div>
+            <div style="display:flex;gap:4px;margin-bottom:14px">
+                <button class="view-mode-btn active" id="ftModeIncremental">🔄 Incremental</button>
+                <button class="view-mode-btn" id="ftModeScratch">🆕 From Scratch</button>
+                <button class="view-mode-btn" id="ftModeMerge">🔀 Merge</button>
+            </div>
+            <div id="ftScopePanel" style="margin-bottom:12px;padding:10px;background:#020617;border-radius:8px;border:1px solid rgba(255,255,255,0.06)">
+                <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:8px">TRAINING SCOPE</div>
+                <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
+                    <button class="view-mode-btn active" id="ftScopeAll">🗂 All</button>
+                    <button class="view-mode-btn" id="ftScopeCorrected">✏️ Corrected</button>
+                    <button class="view-mode-btn" id="ftScopeCustom">☑ Custom</button>
+                </div>
+                <div id="ftFileList" style="display:none;max-height:140px;overflow-y:auto;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:4px 6px">
+                    <div id="ftFileCheckboxes"></div>
+                </div>
+                <div id="ftScopeHint" style="font-size:10px;color:var(--muted);margin-top:4px">All labelled images will be used.</div>
+            </div>
+            <div id="ftParamsPanel">
+                <div class="form-group"><label>Base Model</label><select id="ftBaseModel" style="width:100%"></select></div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px">
+                    <div><label style="font-size:11px;color:var(--muted)">Epochs</label><input type="number" id="ftEpochs" value="5" min="1" style="width:100%"></div>
+                    <div><label style="font-size:11px;color:var(--muted)">Batch</label><input type="number" id="ftBatch" value="2" min="1" style="width:100%"></div>
+                    <div><label style="font-size:11px;color:var(--muted)">ImgSz</label><input type="number" id="ftImgsz" value="640" style="width:100%"></div>
+                </div>
+            </div>
+            <div id="ftMergePanel" style="display:none;margin-bottom:14px">
+                <div class="form-group"><label>Model A</label><select id="ftMergeA" style="width:100%"></select></div>
+                <div class="form-group"><label>Model B</label><select id="ftMergeB" style="width:100%"></select></div>
+                <label style="font-size:11px;color:var(--muted)">Alpha (A weight)</label>
+                <input type="range" id="ftAlpha" min="0" max="100" value="50" oninput="document.getElementById('ftAlphaVal').textContent=this.value+'%'">
+                <span id="ftAlphaVal">50%</span>
+            </div>
+            <div style="display:flex;gap:8px">
+                <button class="btn btn-success" id="btnStartFinetune" style="flex:1">▶ Start Fine-tune</button>
+            </div>
+            <div id="finetuneStatus" style="margin-top:10px;font-size:12px;color:var(--muted);display:none"></div>
+        </div>
+    </div>
+
+    <div id="metadataModal" class="modal-overlay">
+        <div class="modal-box" onclick="event.stopPropagation()">
+            <h3 style="font-size:15px;margin-bottom:12px">📄 Existing Analysis Found</h3>
+            <div id="metadataModalBody" style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.7"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-success" style="flex:1" id="metadataUse">✅ Use Existing</button>
+                <button class="btn-primary" style="flex:1" id="metadataGemini">🤖 Gemini</button>
+                <button class="btn-secondary" style="flex:1" id="metadataLocal">🔧 Local</button>
+            </div>
+            <button class="btn-secondary" style="width:100%;margin-top:8px;font-size:11px" id="metadataAll">Apply to all this session</button>
+        </div>
+    </div>
+</body>
+</html>
