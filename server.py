@@ -285,6 +285,34 @@ def _correct_label_lines(basename, info, action, cls_name, idx, new_cls):
     lbl_path = DATASET_DIR / "labels" / "train" / (basename + ".txt")
     lbl_path.write_text("\n".join(lines) + "\n")
 
+    # Rebuild labelled contours from updated lines so marked overlay is redrawn
+    img_h, img_w = info.get("img_h", 0), info.get("img_w", 0)
+    if img_h and img_w:
+        rebuilt: dict = {}
+        for ln in lines:
+            parts = ln.split()
+            if len(parts) < 7:
+                continue
+            try:
+                cid = int(parts[0])
+                cls = ID_TO_CLASS.get(cid, f"cls{cid}")
+                coords = list(map(float, parts[1:]))
+                pts = [[int(coords[k] * img_w), int(coords[k+1] * img_h)] for k in range(0, len(coords) - 1, 2)]
+                if len(pts) >= 3:
+                    cnt = np.array(pts, dtype=np.int32).reshape(-1, 1, 2)
+                    rebuilt.setdefault(cls, []).append(cnt)
+            except Exception:
+                pass
+        info["labelled"] = rebuilt
+        marked = info.get("marked_path")
+        if marked and info.get("img_b64"):
+            img_data = base64.b64decode(info["img_b64"])
+            arr = np.frombuffer(img_data, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is not None:
+                draw_labelled_image(img, rebuilt, marked)
+                info["marked_b64"] = _cv_to_b64(cv2.imread(marked))
+
     counts: dict = {}
     for l in lines:
         try:
@@ -667,11 +695,15 @@ def correct_label(body: dict):
 
     if action == "remove":
         info["labelled"][cls_name].pop(idx)
+        if not info["labelled"][cls_name]:
+            del info["labelled"][cls_name]
         msg = f"Removed {cls_name} #{idx+1}"
     elif action == "relabel":
         if new_cls not in CLASS_IDS:
             return JSONResponse({"error": f"Unknown class: {new_cls}"}, status_code=400)
         cnt = info["labelled"][cls_name].pop(idx)
+        if not info["labelled"][cls_name]:
+            del info["labelled"][cls_name]
         info["labelled"].setdefault(new_cls, []).append(cnt)
         msg = f"Relabelled {cls_name} #{idx+1} → {new_cls}"
     else:

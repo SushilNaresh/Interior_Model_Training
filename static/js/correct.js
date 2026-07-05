@@ -1,5 +1,5 @@
 import { pzSetImage, pzSetPlaceholder, pzFit, pzReset, pzZoom, pzInitDrag, pzGet } from './panzoom.js';
-import { CLASS_COLORS, initDrawClassSelect, populateClassDropdowns } from './draw-classes.js';
+import { CLASS_COLORS, DRAW_CLASS_SELECT_HTML, initDrawClassSelect, populateClassDropdowns } from './draw-classes.js';
 
 let _correctData = {};
 let _correctView = 'marked';
@@ -136,7 +136,6 @@ async function renderLabelList(basename, labels) {
   } catch { _labelDetails = {}; }
 
   let html = '';
-  const allClasses = _yoloClasses.length ? _yoloClasses : Object.keys(CLASS_COLORS);
   for (const [cls, count] of Object.entries(labels)) {
     if (filter && cls !== filter) continue;
     const color = CLASS_COLORS[cls] || '#888';
@@ -152,9 +151,9 @@ async function renderLabelList(basename, labels) {
           <strong>${cls}</strong> #${i}
           ${bboxStr ? `<span style="font-size:10px;color:var(--muted)">${bboxStr}</span>` : ''}
         </label>
-        <div class="actions" onclick="event.stopPropagation()">
-          <select id="relabel_${cls}_${i}" style="width:88px;font-size:11px">
-            ${allClasses.map((c) => `<option value="${c}" ${c === cls ? 'selected' : ''}>${c}</option>`).join('')}
+        <div class="actions">
+          <select id="relabel_${cls}_${i}" style="width:130px;font-size:11px">
+            ${DRAW_CLASS_SELECT_HTML}
           </select>
           <button class="btn small" data-action="relabel" data-cls="${cls}" data-idx="${i}">↩</button>
           <button class="btn small" data-action="ifc" data-cls="${cls}" data-idx="${i}">IFC</button>
@@ -306,9 +305,17 @@ async function correctLabel(basename, action, clsName, idx) {
     const res = await fetch('/api/correct', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await res.json();
     if (data.ok) {
-      if (data.marked_b64) { _correctData.marked_b64 = data.marked_b64; _correctData.labels = data.labels; }
+      _correctData.labels = data.labels || {};
+      if (data.marked_b64) _correctData.marked_b64 = data.marked_b64;
+      _pendingChanges = true;
+      updateSaveIndicator();
+      _activeEdit = null;
+      hideEditOverlay();
       renderCorrectImage();
-      await renderLabelList(basename, data.labels || {});
+      await renderLabelList(basename, _correctData.labels);
+      const total = Object.values(_correctData.labels).reduce((a, b) => a + b, 0);
+      const summary = document.getElementById('correctSummary');
+      if (summary) summary.textContent = `${total} labels`;
       document.getElementById('correctStatusBar').textContent = `✓ ${data.msg || action}`;
     } else appendCorrectLog('ERROR: ' + (data.error || 'Unknown'));
   } catch (e) { appendCorrectLog('ERROR: ' + e.message); }
@@ -727,8 +734,12 @@ export function initCorrect() {
   document.getElementById('label-remove-selected')?.addEventListener('click', async () => {
     const selected = Array.from(document.querySelectorAll('#label-list .label-row:checked'));
     if (!selected.length || !confirm(`Remove ${selected.length} label(s)?`)) return;
-    for (const cb of selected) {
-      await correctLabel(_correctBasename, 'remove', cb.dataset.class, parseInt(cb.dataset.idx));
+    // Collect all {cls, idx} before any DOM re-render
+    const toRemove = selected.map(cb => ({ cls: cb.dataset.class, idx: parseInt(cb.dataset.idx) }));
+    // Sort descending by idx within each class so earlier removals don't shift later indices
+    toRemove.sort((a, b) => a.cls === b.cls ? b.idx - a.idx : 0);
+    for (const { cls, idx } of toRemove) {
+      await correctLabel(_correctBasename, 'remove', cls, idx);
     }
   });
 

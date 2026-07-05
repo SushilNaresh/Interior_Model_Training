@@ -1,16 +1,12 @@
 /** Standalone OCR / room text mapping */
 export function initAnalyse() {
-    const imageSelect = document.getElementById('analyse-image-select');
-    const fileInput = document.getElementById('analyse-file');
-    const runBtn = document.getElementById('analyse-run-btn');
-    const refreshBtn = document.getElementById('analyse-refresh-btn');
-    const overlayImg = document.getElementById('analyse-overlay');
-    const placeholder = document.getElementById('analyse-placeholder');
-    const mappingsEl = document.getElementById('analyse-mappings');
-    const summaryEl = document.getElementById('analyse-summary');
-    const terminal = document.getElementById('log-terminal');
+    // Panel HTML is injected via insertAdjacentHTML AFTER this module runs,
+    // so getElementById calls here return null. Resolve elements lazily.
+    const get = id => document.getElementById(id);
+    const terminal = () => document.getElementById('log-terminal');
 
     async function refreshImages() {
+        const imageSelect = get('analyse-image-select');
         if (!imageSelect) return;
         try {
             const res = await fetch('/api/status');
@@ -26,6 +22,8 @@ export function initAnalyse() {
     }
 
     async function getImageBlob() {
+        const fileInput = get('analyse-file');
+        const imageSelect = get('analyse-image-select');
         if (fileInput?.files?.length) {
             return { blob: fileInput.files[0], name: fileInput.files[0].name };
         }
@@ -39,10 +37,18 @@ export function initAnalyse() {
         return { blob: new Blob([bytes], { type: 'image/jpeg' }), name };
     }
 
-    runBtn?.addEventListener('click', async () => {
+    // Use event delegation — panel is not in DOM when initAnalyse() runs
+    document.addEventListener('click', async e => {
+        if (e.target.id === 'analyse-refresh-btn') {
+            refreshImages();
+            return;
+        }
+        if (e.target.id !== 'analyse-run-btn') return;
+
         const img = await getImageBlob();
         if (!img) return alert('Select an image or upload a file');
-        terminal && (terminal.innerText += `\n[ANALYSE] Running OCR on ${img.name}`);
+        const t = terminal();
+        t && (t.innerText += `\n[ANALYSE] Running OCR on ${img.name}`);
         try {
             window.showLoader?.('Running OCR analysis…');
             const fd = new FormData();
@@ -50,10 +56,14 @@ export function initAnalyse() {
             const res = await fetch('/api/analyse', { method: 'POST', body: fd });
             const data = await res.json();
             if (!res.ok) {
-                terminal && (terminal.innerText += `\n[ANALYSE] Error: ${JSON.stringify(data)}`);
+                t && (t.innerText += `\n[ANALYSE] Error: ${JSON.stringify(data)}`);
                 return;
             }
-            if (data.overlay_b64) {
+            const overlayImg = get('analyse-overlay');
+            const placeholder = get('analyse-placeholder');
+            const mappingsEl = get('analyse-mappings');
+            const summaryEl = get('analyse-summary');
+            if (data.overlay_b64 && overlayImg && placeholder) {
                 placeholder.style.display = 'none';
                 overlayImg.style.display = 'block';
                 overlayImg.src = 'data:image/jpeg;base64,' + data.overlay_b64;
@@ -65,17 +75,17 @@ export function initAnalyse() {
                     li.textContent = `"${m.text}" → ${m.class} @ (${Math.round(m.cx)}, ${Math.round(m.cy)})`;
                     mappingsEl.appendChild(li);
                 });
-                if (!(data.mappings || []).length) mappingsEl.innerHTML = '<li style="color:var(--muted)">No mappings</li>';
+                if (!(data.mappings || []).length) mappingsEl.innerHTML = '<li style="color:var(--muted)">No mappings found</li>';
             }
             if (summaryEl) summaryEl.textContent = JSON.stringify(data.summary || {}, null, 2);
-            terminal && (terminal.innerText += `\n[ANALYSE] ${(data.mappings || []).length} mapping(s)`);
+            t && (t.innerText += `\n[ANALYSE] ${(data.mappings || []).length} mapping(s)`);
         } catch (e) {
-            terminal && (terminal.innerText += `\n[ANALYSE] Exception: ${e}`);
+            t && (t.innerText += `\n[ANALYSE] Exception: ${e}`);
         } finally {
             window.hideLoader?.();
         }
     });
 
-    refreshBtn?.addEventListener('click', refreshImages);
-    refreshImages();
+    // Refresh image list when OCR nav tab is clicked
+    document.getElementById('nav-analyse')?.addEventListener('click', refreshImages);
 }
