@@ -120,14 +120,42 @@ async def convert_and_evaluate(file: UploadFile = File(...), metadata_choice: st
                 _push(f"❌ [CONVERT-LOCAL-FAIL] {type(e).__name__}: {e}")
                 _push(traceback.format_exc())
 
+        # ── Load corrected labels from disk (Correct panel edits) ──────────────
+        from config.classes import ID_TO_CLASS as _ID2CLS
+        import numpy as _np
+        corrected_labelled = {}
+        lbl_path = DATASET_DIR / "labels" / "train" / (basename + ".txt")
+        if lbl_path.exists() and img is not None:
+            h, w = img.shape[:2]
+            for line in lbl_path.read_text().splitlines():
+                parts = line.strip().split()
+                if len(parts) < 7:
+                    continue
+                try:
+                    cid = int(parts[0])
+                    cls = _ID2CLS.get(cid, f"cls{cid}")
+                    coords = list(map(float, parts[1:]))
+                    pts = [[int(coords[k]*w), int(coords[k+1]*h)] for k in range(0, len(coords)-1, 2)]
+                    if len(pts) >= 3:
+                        cnt = _np.array(pts, dtype=_np.int32).reshape(-1, 1, 2)
+                        corrected_labelled.setdefault(cls, []).append(cnt)
+                except Exception:
+                    pass
+        # Use corrected labels as ground truth if available, else fall back to freshly detected
+        gt_labelled = corrected_labelled if corrected_labelled else labelled
+        n_corrected = sum(len(v) for v in corrected_labelled.values())
+        _push(f"[CONVERT] Ground truth: {n_corrected} corrected labels" if corrected_labelled else "[CONVERT] Ground truth: heuristic labels (no corrections found)")
+        response_payload["gt_labels"] = {k: len(v) for k, v in gt_labelled.items()}
+        response_payload["used_corrections"] = bool(corrected_labelled)
+
         eval_report = {}
         if weights_before:
             preds_before = _run_local_inference(str(dest), weights_before)
-            eval_report["before"] = _compare_preds_to_labels(preds_before, labelled)
+            eval_report["before"] = _compare_preds_to_labels(preds_before, gt_labelled)
             _push(f"[CONVERT] Eval before: {eval_report.get('before')}")
         if weights_after:
             preds_after = _run_local_inference(str(dest), weights_after)
-            eval_report["after"] = _compare_preds_to_labels(preds_after, labelled)
+            eval_report["after"] = _compare_preds_to_labels(preds_after, gt_labelled)
             _push(f"[CONVERT] Eval after: {eval_report.get('after')}")
 
         response_payload["eval"] = eval_report

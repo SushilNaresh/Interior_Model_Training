@@ -6,6 +6,20 @@ from pathlib import Path
 
 router = APIRouter()
 
+@router.get("/api/base_models")
+def get_base_models():
+    from server import PROJECT_ROOT
+    candidates = [
+        PROJECT_ROOT / "yolov8n-seg.pt",
+        PROJECT_ROOT / "yolov8s-seg.pt",
+        PROJECT_ROOT / "yolov8m-seg.pt",
+    ]
+    return {"base_models": [
+        {"path": str(p), "name": p.name}
+        for p in candidates if p.exists()
+    ]}
+
+
 @router.get("/api/model_versions")
 def get_model_versions():
     from server import _find_best_model, _model_versions, DATASET_DIR, LOGIC_DIR, PROJECT_ROOT

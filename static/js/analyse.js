@@ -53,6 +53,9 @@ export function initAnalyse() {
             window.showLoader?.('Running OCR analysis…');
             const fd = new FormData();
             fd.append('file', img.blob, img.name);
+            // Send basename so server loads corrected labels from labels/train/
+            const basename = img.name.replace(/\.[^.]+$/, '');
+            fd.append('basename', basename);
             const res = await fetch('/api/analyse', { method: 'POST', body: fd });
             const data = await res.json();
             if (!res.ok) {
@@ -72,7 +75,8 @@ export function initAnalyse() {
                 mappingsEl.innerHTML = '';
                 (data.mappings || []).forEach(m => {
                     const li = document.createElement('li');
-                    li.textContent = `"${m.text}" → ${m.class} @ (${Math.round(m.cx)}, ${Math.round(m.cy)})`;
+                    const label = m.subtype || m.text;
+                    li.textContent = `"${m.text}" → ${label} [${m.class}] @ (${Math.round(m.cx)}, ${Math.round(m.cy)}) conf:${m.conf}%`;
                     mappingsEl.appendChild(li);
                 });
                 if (!(data.mappings || []).length) mappingsEl.innerHTML = '<li style="color:var(--muted)">No mappings found</li>';

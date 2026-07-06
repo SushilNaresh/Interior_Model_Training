@@ -119,23 +119,26 @@ async def detect(file: UploadFile = File(...), model_path: str = Form(""), imgsz
 
 
 @router.post("/api/analyse")
-async def analyse_endpoint(file: UploadFile = File(...)):
+async def analyse_endpoint(file: UploadFile = File(...), basename: str = Form(default="")):
     from server import _cv_to_b64, _push
     data = await file.read()
     arr  = np.frombuffer(data, dtype=np.uint8)
     img  = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         return JSONResponse({"error": "Cannot decode image"}, status_code=400)
+    if not basename:
+        from pathlib import Path
+        basename = Path(file.filename).stem if file.filename else ""
     try:
         from logic.room_text_mapper import analyse_image, draw_text_mapping_overlay
-        result = analyse_image(img)
+        result = analyse_image(img, basename=basename)
         overlay = draw_text_mapping_overlay(img, result["mappings"])
         return {
             "orig_b64":    _cv_to_b64(img),
             "overlay_b64": _cv_to_b64(overlay),
-            "mappings":    [{"text": m["text"], "class": m["class"], "cx": m["cx"], "cy": m["cy"]} for m in result["mappings"]],
+            "mappings":    [{"text": m["text"], "class": m["class"], "subtype": m.get("subtype", ""), "cx": m["cx"], "cy": m["cy"], "conf": m.get("conf", 0)} for m in result["mappings"]],
             "summary":     result["summary"],
-            "ocr_words":   [{"text": r["text"], "clean": r["clean_text"], "conf": r["conf"], "x": r["x"], "y": r["y"]} for r in result["regions"]],
+            "ocr_words":   [{"text": r["text"], "clean": r.get("clean_text", r["text"]), "conf": r.get("conf", 0), "x": r.get("x", 0), "y": r.get("y", 0)} for r in result.get("regions", [])],
         }
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)

@@ -11,21 +11,42 @@ export function initModels() {
 
     async function loadModels() {
         try {
-            const res = await fetch('/api/model_versions');
+            const [res, baseRes] = await Promise.all([
+                fetch('/api/model_versions'),
+                fetch('/api/base_models'),
+            ]);
             const data = await res.json();
+            const baseData = await baseRes.json();
             const versions = data.versions || [];
+            const baseModels = baseData.base_models || [];
             const active = data.best_model || '';
 
             const fillSelect = (sel) => {
                 if (!sel) return;
                 sel.innerHTML = '<option value="">— select —</option>';
-                versions.forEach(v => {
-                    const opt = document.createElement('option');
-                    opt.value = v.path || '';
-                    opt.textContent = `${v.name || 'model'}  mAP50=${v.mAP50}  ${v.is_active ? '(active)' : ''}`;
-                    if (v.path === active) opt.selected = true;
-                    sel.appendChild(opt);
-                });
+                if (versions.length) {
+                    const grpTrained = document.createElement('optgroup');
+                    grpTrained.label = 'Trained Models';
+                    versions.forEach(v => {
+                        const opt = document.createElement('option');
+                        opt.value = v.path || '';
+                        opt.textContent = `${v.name || 'model'}  mAP50=${v.mAP50}  ${v.is_active ? '(active)' : ''}`;
+                        if (v.path === active) opt.selected = true;
+                        grpTrained.appendChild(opt);
+                    });
+                    sel.appendChild(grpTrained);
+                }
+                if (baseModels.length) {
+                    const grpBase = document.createElement('optgroup');
+                    grpBase.label = 'Base YOLO Models';
+                    baseModels.forEach(b => {
+                        const opt = document.createElement('option');
+                        opt.value = b.path;
+                        opt.textContent = `${b.name}  (base / pretrained)`;
+                        grpBase.appendChild(opt);
+                    });
+                    sel.appendChild(grpBase);
+                }
             };
             fillSelect(mergeA);
             fillSelect(mergeB);
