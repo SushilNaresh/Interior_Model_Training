@@ -1038,8 +1038,10 @@ def _merge_worker(model_a: str, model_b: str, alpha: float, name: str):
     _push(f"  A: {Path(model_a).name}")
     _push(f"  B: {Path(model_b).name}")
     try:
-        ckpt_a = torch.load(model_a, map_location="cpu")
-        ckpt_b = torch.load(model_b, map_location="cpu")
+        from ultralytics.nn.tasks import SegmentationModel, DetectionModel
+        with torch.serialization.safe_globals([SegmentationModel, DetectionModel]):
+            ckpt_a = torch.load(model_a, map_location="cpu", weights_only=False)
+            ckpt_b = torch.load(model_b, map_location="cpu", weights_only=False)
         sd_a = ckpt_a["model"].state_dict() if hasattr(ckpt_a.get("model",""), "state_dict") else ckpt_a["model"]
         sd_b = ckpt_b["model"].state_dict() if hasattr(ckpt_b.get("model",""), "state_dict") else ckpt_b["model"]
         merged_sd = {}
@@ -1669,6 +1671,104 @@ def _train_worker(epochs: int, batch: int, imgsz: int):
     finally:
         _training_active = False
         _training_lock.release()
+
+@app.post("/api/rearrange")
+async def rearrange_room(file: UploadFile = File(...), style: str = Form(default="")):
+    """Upload a room photo → Gemini detects furniture → suggests optimised layout."""
+    _load_gemini_api_key()
+    if not os.environ.get("GEMINI_API_KEY", "").strip():
+        return JSONResponse({"error": "GEMINI_API_KEY not configured"}, status_code=400)
+    data = await file.read()
+    arr  = np.frombuffer(data, dtype=np.uint8)
+    img  = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return JSONResponse({"error": "Cannot decode image"}, status_code=400)
+    try:
+        # Resize for API
+        h, w = img.shape[:2]
+        max_side = 1600
+        if max(h, w) > max_side:
+            scale = max_side / max(h, w)
+            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+            h, w = img.shape[:2]
+        _, buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        img_bytes = buf.tobytes()
+
+        style_hint = f" Preferred style: {style}. " if style.strip() else ""
+        prompt = f"""You are an expert interior designer and space optimisation specialist.
+
+Analyse this room photo and provide a furniture rearrangement plan to make the space feel larger and more functional — without buying anything new.{style_hint}
+
+Respond ONLY with a valid JSON object in exactly this structure:
+{{
+  "room_type": "<living room / bedroom / etc>",
+  "room_dimensions_estimate": "<e.g. approx 4m x 5m>",
+  "current_issues": ["<issue 1>", "<issue 2>"],
+  "furniture_detected": [
+    {{"name": "<item>", "current_position": "<where it is now>", "suggested_position": "<where to move it>", "reason": "<why>"}}
+  ],
+  "layout_steps": ["<step 1>", "<step 2>", "<step 3>"],
+  "space_tips": ["<tip 1>", "<tip 2>"],
+  "expected_improvement": "<one sentence summary of the benefit>"
+}}"""
+
+        client = genai.Client()
+        image_part = types.Part.from_bytes(data=img_bytes, mime_type='image/jpeg')
+        response = None
+        last_err = None
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=[image_part, prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type='application/json',
+                        temperature=0.3,
+                        max_output_tokens=4096,
+                    )
+                )
+                break
+            except Exception as _e:
+                last_err = _e
+                err_str = str(_e)
+                if '503' in err_str or 'UNAVAILABLE' in err_str or '429' in err_str or 'RESOURCE_EXHAUSTED' in err_str:
+                    wait = 5 * (2 ** attempt)   # 5s, 10s, 20s
+                    logger.warning(f"[REARRANGE] Gemini attempt {attempt+1} failed ({err_str[:80]}), retrying in {wait}s…")
+                    time.sleep(wait)
+                else:
+                    raise
+        if response is None:
+            raise Exception(f"Gemini unavailable after 3 attempts: {last_err}")
+        import json as _json
+        raw = response.text or ""
+        # Strip markdown fences if present
+        raw = re.sub(r'^```[a-z]*\n?', '', raw.strip(), flags=re.MULTILINE)
+        raw = re.sub(r'```$', '', raw.strip(), flags=re.MULTILINE)
+        plan = _json.loads(raw.strip())
+
+        # Draw overlay: annotate each furniture item with arrow hint
+        overlay = img.copy()
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        fs = max(0.4, max(h, w) / 2000)
+        th = max(1, int(max(h, w) * 0.002))
+        y_cursor = 30
+        cv2.rectangle(overlay, (0, 0), (w, min(h, 30 + 28 * (len(plan.get('furniture_detected', [])) + 2))), (20, 20, 20), -1)
+        cv2.putText(overlay, f"Room: {plan.get('room_type','?')}  |  {plan.get('room_dimensions_estimate','')}",
+                    (8, y_cursor), font, fs, (255, 220, 80), th, cv2.LINE_AA)
+        y_cursor += 26
+        for item in plan.get('furniture_detected', []):
+            label = f"{item.get('name','?')}: {item.get('current_position','?')} → {item.get('suggested_position','?')}"
+            cv2.putText(overlay, label[:90], (8, y_cursor), font, fs * 0.85, (100, 255, 180), th, cv2.LINE_AA)
+            y_cursor += 22
+
+        return {
+            "orig_b64":    _cv_to_b64(img),
+            "overlay_b64": _cv_to_b64(overlay),
+            "plan":        plan,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 
 @app.get("/", response_class=HTMLResponse)
 def index():

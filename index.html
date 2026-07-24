@@ -7,27 +7,32 @@
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
-    <div class="container wide-layout">
-        <header>
-            <div>
-                <h1 style="margin:0; font-size: 24px;">OonexBIM Control Panel</h1>
-                <p style="margin:5px 0 0 0; color: var(--text-muted); font-size: 14px;">Unified Floor Plan Labeler & Automated ML Trainer Framework</p>
-            </div>
-            <div style="display:flex; flex-direction:column; gap:8px; align-items:flex-end;">
-                <nav class="main-nav">
-                    <button class="btn" id="nav-dashboard">Dashboard</button>
-                    <button class="btn" id="nav-train">Train</button>
-                    <button class="btn" id="nav-correct">Correct</button>
-                    <button class="btn" id="nav-test">Test</button>
-                    <button class="btn" id="nav-ifc">IFC Props</button>
-                    <button class="btn" id="nav-analyse">OCR</button>
-                    <button class="btn" id="nav-convert">Convert</button>
-                    <button class="btn" id="nav-models">Models</button>
-                </nav>
-                <div id="system-status" class="status-badge">Engine Status: Ready</div>
-            </div>
-        </header>
+<div class="app-shell">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-logo">
+            <h1>OonexBIM</h1>
+            <p>BIM AI Pipeline</p>
+        </div>
+        <nav class="sidebar-nav">
+            <button id="nav-dashboard" class="active">Dashboard</button>
+            <button id="nav-train">Train</button>
+            <button id="nav-correct">Correct</button>
+            <button id="nav-test">Test</button>
+            <button id="nav-ifc">IFC Props</button>
+            <button id="nav-analyse">OCR</button>
+            <button id="nav-convert">Convert</button>
+            <button id="nav-models">Models</button>
+            <button id="nav-rearrange">Re-layout</button>
+        </nav>
+        <div class="sidebar-footer">
+            <div id="system-status" class="status-badge">Engine: Ready</div>
+        </div>
+    </aside>
 
+    <!-- Main content -->
+    <div class="main-content">
+    <div class="container wide-layout">
         <div id="panel-dashboard">
         <div class="grid">
             <div class="controls-col">
@@ -76,6 +81,8 @@
         </div>
         </div>
     </div>
+    </div><!-- /.main-content -->
+</div><!-- /.app-shell -->
 
     <script>
         // Global loader control
@@ -110,7 +117,8 @@
                 terminal.scrollTop = terminal.scrollHeight;
             }
             if (data.progress && data.progress.status) {
-                document.getElementById('system-status').innerText = 'Engine Status: ' + data.progress.status;
+                const s = document.getElementById('system-status');
+                if (s) s.innerText = 'Engine: ' + data.progress.status;
             }
         };
 
@@ -266,8 +274,9 @@
         import { initIfc } from '/static/js/ifc.js';
         import { initAnalyse } from '/static/js/analyse.js';
         import { initConvert } from '/static/js/convert.js';
+        import { initRearrange } from '/static/js/rearrange.js';
 
-        const ALL_PANELS = ['dashboard','train','correct','test','ifc','analyse','convert','models'];
+        const ALL_PANELS = ['dashboard','train','correct','test','ifc','analyse','convert','models','rearrange'];
 
         function showPanel(name) {
             ALL_PANELS.forEach(p => {
@@ -280,11 +289,11 @@
         const navMap = {
             'nav-dashboard': 'dashboard', 'nav-train': 'train', 'nav-correct': 'correct',
             'nav-test': 'test', 'nav-ifc': 'ifc', 'nav-analyse': 'analyse',
-            'nav-convert': 'convert', 'nav-models': 'models'
+            'nav-convert': 'convert', 'nav-models': 'models', 'nav-rearrange': 'rearrange'
         };
         const navButtons = Object.keys(navMap).map(id => document.getElementById(id)).filter(Boolean);
         function setActive(id) {
-            navButtons.forEach(b => { if (b.id === id) b.style.opacity = 1; else b.style.opacity = 0.65; });
+            navButtons.forEach(b => b.classList.toggle('active', b.id === id));
         }
         Object.entries(navMap).forEach(([navId, panel]) => {
             document.getElementById(navId)?.addEventListener('click', () => {
@@ -524,6 +533,36 @@
                 </div>
             </div>
 
+            <div id="panel-rearrange" class="card panel-page" style="display:none">
+                <h2>Room Re-layout</h2>
+                <p style="color:var(--muted);margin-bottom:16px">Upload a photo of any room — AI detects your existing furniture and suggests a rearrangement to make the space feel larger and more functional. No new furniture needed.</p>
+                <div class="panel-grid-2">
+                    <div>
+                        <div class="form-group">
+                            <label>Room Photo</label>
+                            <input id="rearrange-file" type="file" accept="image/*">
+                        </div>
+                        <div class="form-group">
+                            <label>Style Preference <span style="color:var(--muted);font-size:0.85em">(optional)</span></label>
+                            <input id="rearrange-style" type="text" placeholder="e.g. minimalist, cozy, open-plan">
+                        </div>
+                        <button class="btn btn-success" id="rearrange-run-btn">Analyse &amp; Re-layout</button>
+                        <div style="margin-top:20px">
+                            <label style="display:block;margin-bottom:6px;color:var(--muted)">Original</label>
+                            <img id="rearrange-orig" style="display:none;max-width:100%;border-radius:6px;border:1px solid var(--border)">
+                        </div>
+                        <div style="margin-top:12px">
+                            <label style="display:block;margin-bottom:6px;color:var(--muted)">Layout Overlay</label>
+                            <img id="rearrange-overlay" style="display:none;max-width:100%;border-radius:6px;border:1px solid var(--border)">
+                        </div>
+                    </div>
+                    <div>
+                        <label style="display:block;margin-bottom:8px">Rearrangement Plan</label>
+                        <div id="rearrange-result" class="rearrange-plan">Upload a room photo and click Analyse.</div>
+                    </div>
+                </div>
+            </div>
+
             <div id="panel-models" class="card panel-page" style="display:none">
                 <h2>Model Management</h2>
                 <div class="panel-grid-2">
@@ -545,7 +584,7 @@
             `);
         }
 
-        initTrain(); initCorrect(); initTest(); initModels(); initIfc(); initAnalyse(); initConvert();
+        initTrain(); initCorrect(); initTest(); initModels(); initIfc(); initAnalyse(); initConvert(); initRearrange();
         showPanel('dashboard');
         setActive('nav-dashboard');
     </script>

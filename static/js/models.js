@@ -1,13 +1,7 @@
 /** Model management: set active, merge models */
 export function initModels() {
-    const listEl = document.getElementById('models-list');
-    const mergeA = document.getElementById('merge-model-a');
-    const mergeB = document.getElementById('merge-model-b');
-    const mergeAlpha = document.getElementById('merge-alpha');
-    const mergeName = document.getElementById('merge-name');
-    const mergeBtn = document.getElementById('merge-run-btn');
-    const refreshBtn = document.getElementById('models-refresh-btn');
-    const terminal = document.getElementById('log-terminal');
+    const terminal = () => document.getElementById('log-terminal');
+    const el = (id) => document.getElementById(id);
 
     async function loadModels() {
         try {
@@ -48,9 +42,10 @@ export function initModels() {
                     sel.appendChild(grpBase);
                 }
             };
-            fillSelect(mergeA);
-            fillSelect(mergeB);
+            fillSelect(el('merge-model-a'));
+            fillSelect(el('merge-model-b'));
 
+            const listEl = el('models-list');
             if (listEl) {
                 listEl.innerHTML = '';
                 if (!versions.length) {
@@ -70,53 +65,63 @@ export function initModels() {
                     `;
                     listEl.appendChild(row);
                 });
-                listEl.querySelectorAll('.set-active-btn').forEach(btn => {
-                    btn.addEventListener('click', async () => {
-                        const path = btn.dataset.path;
-                        if (!path) return;
-                        terminal && (terminal.innerText += `\n[MODELS] Setting active: ${path}`);
-                        const r = await fetch('/api/set_model', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ path })
-                        });
-                        const j = await r.json();
-                        terminal && (terminal.innerText += `\n[MODELS] ${JSON.stringify(j)}`);
-                        loadModels();
-                        try { window.refreshTrainLists?.(); window.refreshTestLists?.(); } catch (_) {}
-                    });
-                });
             }
         } catch (e) {
-            terminal && (terminal.innerText += `\n[MODELS] Load failed: ${e}`);
+            const t = terminal();
+            t && (t.innerText += `\n[MODELS] Load failed: ${e}`);
         }
     }
 
-    mergeBtn?.addEventListener('click', async () => {
-        const model_a = mergeA?.value;
-        const model_b = mergeB?.value;
-        if (!model_a || !model_b) return alert('Select both models to merge');
-        const alpha = parseFloat(mergeAlpha?.value) || 0.5;
-        const name = mergeName?.value || 'merged';
-        terminal && (terminal.innerText += `\n[MODELS] Merging (alpha=${alpha})…`);
-        try {
-            window.showLoader?.('Merging models…');
-            const res = await fetch('/api/merge_models', {
+    // Event delegation — works regardless of when DOM is ready
+    document.addEventListener('click', async (e) => {
+        if (e.target.id === 'models-refresh-btn') {
+            loadModels();
+            return;
+        }
+
+        if (e.target.classList.contains('set-active-btn')) {
+            const path = e.target.dataset.path;
+            if (!path) return;
+            const t = terminal();
+            t && (t.innerText += `\n[MODELS] Setting active: ${path}`);
+            const r = await fetch('/api/set_model', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model_a, model_b, alpha, name })
+                body: JSON.stringify({ path })
             });
-            const j = await res.json();
-            terminal && (terminal.innerText += `\n[MODELS] ${JSON.stringify(j)}`);
-            setTimeout(loadModels, 2000);
-        } catch (e) {
-            terminal && (terminal.innerText += `\n[MODELS] Error: ${e}`);
-        } finally {
-            window.hideLoader?.();
+            const j = await r.json();
+            t && (t.innerText += `\n[MODELS] ${JSON.stringify(j)}`);
+            loadModels();
+            try { window.refreshTrainLists?.(); window.refreshTestLists?.(); } catch (_) {}
+            return;
+        }
+
+        if (e.target.id === 'merge-run-btn') {
+            const model_a = el('merge-model-a')?.value;
+            const model_b = el('merge-model-b')?.value;
+            if (!model_a || !model_b) return alert('Select both models to merge');
+            const alpha = parseFloat(el('merge-alpha')?.value) || 0.5;
+            const name = el('merge-name')?.value || 'merged';
+            const t = terminal();
+            t && (t.innerText += `\n[MODELS] Merging (alpha=${alpha})…`);
+            try {
+                window.showLoader?.('Merging models…');
+                const res = await fetch('/api/merge_models', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model_a, model_b, alpha, name })
+                });
+                const j = await res.json();
+                t && (t.innerText += `\n[MODELS] ${JSON.stringify(j)}`);
+                setTimeout(loadModels, 3000);
+            } catch (e) {
+                t && (t.innerText += `\n[MODELS] Error: ${e}`);
+            } finally {
+                window.hideLoader?.();
+            }
         }
     });
 
-    refreshBtn?.addEventListener('click', loadModels);
     loadModels();
     window.refreshModelsList = loadModels;
 }
